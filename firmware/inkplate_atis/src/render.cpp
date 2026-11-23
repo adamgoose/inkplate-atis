@@ -11,12 +11,12 @@ const int HEADER_HEIGHT = 40;
 const struct
 {
     int x, y, width, height;
-} DIAGRAM = {0, HEADER_HEIGHT, 300, 304};
+} DIAGRAM = {0, HEADER_HEIGHT, 352, 352};
 const struct
 {
     int x, y, width;
-} PANEL = {306, HEADER_HEIGHT + 8, 288};
-const int NOTES_TOP = 350;
+} PANEL = {358, HEADER_HEIGHT + 8, 236};
+const int NOTES_TOP = 398;
 
 bool contains(const std::vector<std::string> &list, const char *name)
 {
@@ -60,9 +60,16 @@ void drawHeader(Canvas &canvas, const Airport &airport, const AtisState *atis, b
 // Runway diagram
 // ---------------------------------------------------------------------------
 
-const int DIAGRAM_MARGIN = 52;
-const int ARROW_GAP = 5;
-const int ARROW_LENGTH = 24;
+const int ARROW_GAP = 4;
+const int ARROW_LENGTH = 20;
+// The compass rose fills the pane, less the room the wind arrow needs outside it.
+const int WIND_GAP = 6;
+const int WIND_LENGTH = 28;
+const int ROSE_RADIUS = DIAGRAM.width / 2 - WIND_GAP - WIND_LENGTH - 2;
+const int ROSE_TICK = 8;
+// Runway ends stay far enough inside the rose for a landing or departure arrow
+// that clears the ticks and cardinal letters.
+const int RUNWAY_RADIUS = ROSE_RADIUS - ROSE_TICK - 5 - ARROW_GAP - ARROW_LENGTH;
 
 struct Box
 {
@@ -87,8 +94,6 @@ struct Label
     int height;
     LabelStyle style;
 };
-
-double clamp(double value, double low, double high) { return std::max(low, std::min(high, value)); }
 
 /** True when the boxes come within `gap` pixels of each other. */
 bool overlaps(const Box &a, const Box &b, double gap = 3)
@@ -131,17 +136,55 @@ void drawArrow(Canvas &canvas, Point tail, Point tip, Ink ink, double shaft = 5,
     canvas.fillPolygon(outline, 7, ink);
 }
 
-void drawNorthMark(Canvas &canvas, double x, double y)
+/** The ring, its ticks and cardinal letters. North is up. */
+void drawRose(Canvas &canvas, double cx, double cy)
 {
-    drawArrow(canvas, {x, y + 12}, {x, y - 12}, INK_BLACK, 3, 11, 10);
-    canvas.text(FONT_SMALL, x - 4, y + 14, "N", INK_BLACK);
+    canvas.fillCircle(cx, cy, ROSE_RADIUS, INK_BLACK);
+    canvas.fillCircle(cx, cy, ROSE_RADIUS - 2, INK_WHITE);
+    static const char *const CARDINALS[] = {"N", "E", "S", "W"};
+    for (int degrees = 0; degrees < 360; degrees += 10)
+    {
+        const double radians = (degrees * M_PI) / 180;
+        const double ux = sin(radians), uy = -cos(radians);
+        if (degrees % 90 == 0)
+        {
+            // The letter sits on the ring itself, so it costs the runways no room.
+            const double x = cx + ux * ROSE_RADIUS, y = cy + uy * ROSE_RADIUS;
+            canvas.fillRect(x - 7, y - 9, 14, 18, INK_WHITE);
+            canvas.text(FONT_SMALL, x - 4, y - 8, CARDINALS[degrees / 90], INK_BLACK);
+            continue;
+        }
+        const bool major = degrees % 30 == 0;
+        const double inner = ROSE_RADIUS - (major ? ROSE_TICK : 6);
+        canvas.line({cx + ux * inner, cy + uy * inner}, {cx + ux * (ROSE_RADIUS - 1), cy + uy * (ROSE_RADIUS - 1)},
+                    INK_BLACK, major ? 3 : 1);
+    }
+}
+
+/** An arrow outside the rose at the bearing the wind comes from, flying with the wind. */
+void drawWind(Canvas &canvas, double cx, double cy, const Wind &wind)
+{
+    if (!wind.known)
+        return;
+    if (wind.speed == 0 || !wind.hasDirection)
+    {
+        canvas.text(FONT_SMALL, DIAGRAM.x + 6, DIAGRAM.y + 6, wind.speed == 0 ? "WIND CALM" : "WIND VRB", INK_BLACK);
+        return;
+    }
+    const double radians = (wind.direction * M_PI) / 180;
+    const double ux = sin(radians), uy = -cos(radians);
+    const double near = ROSE_RADIUS + WIND_GAP, far = near + WIND_LENGTH;
+    const Point tail = {cx + ux * far, cy + uy * far};
+    const Point tip = {cx + ux * near, cy + uy * near};
+    drawArrow(canvas, tail, tip, INK_BLACK, 11, 25, 16);
+    drawArrow(canvas, shift(tail, tip, 2), shift(tip, tail, 4), INK_ORANGE, 7, 17, 11);
 }
 
 /** Label offsets (sideways, outwards) in pixels, nearest first. */
 std::vector<Point> labelNudges()
 {
     std::vector<Point> nudges;
-    for (const double outwards : {0, 12, 24, 36})
+    for (const double outwards : {0, 12, -12, 24, -24, 36, -36})
         for (const double sideways : {0, 14, -14, 28, -28, 42, -42})
             nudges.push_back({sideways, outwards});
     std::stable_sort(nudges.begin(), nudges.end(),
@@ -158,25 +201,38 @@ void drawDiagram(Canvas &canvas, const Airport &airport, const AtisState *atis)
     const std::vector<std::string> &departing = atis != nullptr ? atis->runways.departing : NO_RUNWAYS;
     const std::vector<std::string> &closed = atis != nullptr ? atis->runways.closed : NO_RUNWAYS;
 
-    double minX = airport.pavements[0].ends[0].x, maxX = minX;
-    double minY = airport.pavements[0].ends[0].y, maxY = minY;
-    for (int i = 0; i < airport.pavementCount; i++)
-    {
-        for (const PavementEnd &end : airport.pavements[i].ends)
-        {
-            minX = std::min(minX, end.x);
-            maxX = std::max(maxX, end.x);
-            minY = std::min(minY, end.y);
-            maxY = std::max(maxY, end.y);
-        }
-    }
-    const double scale = std::min((DIAGRAM.width - 2 * DIAGRAM_MARGIN) / std::max(1.0, maxX - minX),
-                                  (DIAGRAM.height - 2 * DIAGRAM_MARGIN) / std::max(1.0, maxY - minY));
     const double centreX = DIAGRAM.x + DIAGRAM.width / 2.0;
     const double centreY = DIAGRAM.y + DIAGRAM.height / 2.0;
+    drawRose(canvas, centreX, centreY);
+    if (atis != nullptr)
+        drawWind(canvas, centreX, centreY, atis->weather.wind);
+
+    // Fit the smallest circle around every runway end inside the rose: walk the
+    // centre towards whichever end is farthest, in ever smaller steps.
+    double midX = 0, midY = 0, reach = 1;
+    for (int step = 1; step <= 400; step++)
+    {
+        const PavementEnd *farthest = nullptr;
+        reach = -1;
+        for (int i = 0; i < airport.pavementCount; i++)
+        {
+            for (const PavementEnd &end : airport.pavements[i].ends)
+            {
+                const double distance = hypot(end.x - midX, end.y - midY);
+                if (distance > reach)
+                {
+                    reach = distance;
+                    farthest = &end;
+                }
+            }
+        }
+        midX += (farthest->x - midX) / step;
+        midY += (farthest->y - midY) / step;
+    }
+    const double scale = RUNWAY_RADIUS / std::max(1.0, reach);
     // North up: screen y grows downwards.
     const auto project = [&](const PavementEnd &end) {
-        return Point{centreX + (end.x - (minX + maxX) / 2) * scale, centreY - (end.y - (minY + maxY) / 2) * scale};
+        return Point{centreX + (end.x - midX) * scale, centreY - (end.y - midY) * scale};
     };
 
     const auto isClosed = [&](const Pavement &strip) {
@@ -218,9 +274,20 @@ void drawDiagram(Canvas &canvas, const Airport &airport, const AtisState *atis)
         }
     }
 
-    // The north mark and AIRAC caption are fixed; labels must stay clear of them.
-    std::vector<Box> occupied = {{DIAGRAM.x + DIAGRAM.width - 30.0, DIAGRAM.y + 8.0, 24, 50},
-                                 {DIAGRAM.x + 4.0, DIAGRAM.y + DIAGRAM.height - 18.0, 70, 16}};
+    // Labels must stay clear of the pavement, the arrows and each other.
+    std::vector<Box> occupied;
+    for (const Pavement *strip : ordered)
+    {
+        const Point a = project(strip->ends[0]);
+        const Point b = project(strip->ends[1]);
+        const double width = std::max(7.0, strip->widthFt * scale);
+        const int samples = std::max(1, (int)(hypot(b.x - a.x, b.y - a.y) / 5));
+        for (int i = 0; i <= samples; i++)
+        {
+            const double t = (double)i / samples;
+            occupied.push_back({a.x + (b.x - a.x) * t - width / 2, a.y + (b.y - a.y) * t - width / 2, width, width});
+        }
+    }
     std::vector<Label> labels;
     for (int i = 0; i < airport.pavementCount; i++)
     {
@@ -272,12 +339,21 @@ void drawDiagram(Canvas &canvas, const Airport &airport, const AtisState *atis)
         for (size_t n = 0; n < nudges.size() && !found; n++)
         {
             const double sideways = nudges[n].x, outwards = nudges[n].y;
-            const Box candidate = {
-                clamp(roundHalfUp(label.anchor.x + label.side.x * sideways + label.out.x * outwards - label.width / 2.0),
-                      DIAGRAM.x + 2, DIAGRAM.x + DIAGRAM.width - label.width - 3),
-                clamp(roundHalfUp(label.anchor.y + label.side.y * sideways + label.out.y * outwards - label.height / 2.0),
-                      DIAGRAM.y + 2, DIAGRAM.y + DIAGRAM.height - label.height - 2),
-                (double)label.width, (double)label.height};
+            double x = label.anchor.x + label.side.x * sideways + label.out.x * outwards;
+            double y = label.anchor.y + label.side.y * sideways + label.out.y * outwards;
+            // Pull the box towards the centre until all of it is inside the rose's ticks.
+            const double limit = ROSE_RADIUS - ROSE_TICK - 2;
+            for (int pull = 0; pull < 80; pull++)
+            {
+                if (hypot(fabs(x - centreX) + label.width / 2.0, fabs(y - centreY) + label.height / 2.0) <= limit)
+                    break;
+                const Point pulled = shift({x, y}, {centreX, centreY}, 2);
+                x = pulled.x;
+                y = pulled.y;
+            }
+            const Box candidate = {(double)roundHalfUp(x - label.width / 2.0),
+                                   (double)roundHalfUp(y - label.height / 2.0), (double)label.width,
+                                   (double)label.height};
             if (n == 0)
                 chosen = candidate;
             found = true;
@@ -295,7 +371,6 @@ void drawDiagram(Canvas &canvas, const Airport &airport, const AtisState *atis)
 
     canvas.text(FONT_TINY, DIAGRAM.x + 6, DIAGRAM.y + DIAGRAM.height - 16, std::string("AIRAC ") + airport.airac,
                 INK_BLACK);
-    drawNorthMark(canvas, DIAGRAM.x + DIAGRAM.width - 18, DIAGRAM.y + 24);
 }
 
 // ---------------------------------------------------------------------------
@@ -305,41 +380,7 @@ void drawDiagram(Canvas &canvas, const Airport &airport, const AtisState *atis)
 const struct
 {
     int width, height, gap;
-} BOX = {92, 92, 6};
-
-void drawWindRose(Canvas &canvas, double cx, double cy, const Wind &wind)
-{
-    const double radius = 44;
-    canvas.fillCircle(cx, cy, radius, INK_BLACK);
-    canvas.fillCircle(cx, cy, radius - 2, INK_WHITE);
-    for (int degrees = 0; degrees < 360; degrees += 30)
-    {
-        const double radians = (degrees * M_PI) / 180;
-        const double inner = degrees % 90 == 0 ? radius - 9 : radius - 6;
-        canvas.line({cx + sin(radians) * inner, cy - cos(radians) * inner},
-                    {cx + sin(radians) * (radius - 1), cy - cos(radians) * (radius - 1)}, INK_BLACK,
-                    degrees % 90 == 0 ? 3 : 1);
-    }
-    if (!wind.known)
-        return;
-    if (wind.speed == 0)
-    {
-        canvas.text(FONT_SMALL, cx - 16, cy - 8, "CALM", INK_BLACK);
-        return;
-    }
-    if (!wind.hasDirection)
-    {
-        canvas.text(FONT_SMALL, cx - 12, cy - 8, "VRB", INK_BLACK);
-        return;
-    }
-    // The arrow flies with the wind: tail at the direction it blows from.
-    const double radians = (wind.direction * M_PI) / 180;
-    const double reach = radius - 12;
-    const Point from = {cx + sin(radians) * reach, cy - cos(radians) * reach};
-    const Point to = {cx - sin(radians) * reach, cy + cos(radians) * reach};
-    drawArrow(canvas, from, to, INK_BLACK, 9, 23, 18);
-    drawArrow(canvas, shift(from, to, 2), shift(to, from, 3), INK_ORANGE, 5, 17, 13);
-}
+} BOX = {(PANEL.width - 6) / 2, 92, 6};
 
 void drawBroadcasts(Canvas &canvas, const AtisState &atis)
 {
@@ -356,14 +397,12 @@ void drawBroadcasts(Canvas &canvas, const AtisState &atis)
         canvas.text(FONT_HUGE, x + (BOX.width - FONT_HUGE.cellWidth) / 2.0, PANEL.y + 24, broadcast.code.substr(0, 1),
                     INK_BLACK);
     }
-    drawWindRose(canvas, PANEL.x + 2 * (BOX.width + BOX.gap) + BOX.width / 2.0, PANEL.y + BOX.height / 2.0,
-                 atis.weather.wind);
 }
 
 const struct
 {
     int top, pitch, valueX;
-} ROW = {PANEL.y + BOX.height + 8, 25, PANEL.x + 48};
+} ROW = {PANEL.y + BOX.height + 10, 28, PANEL.x + 48};
 
 std::string formatWind(const Wind &wind)
 {
@@ -430,7 +469,7 @@ void drawWeather(Canvas &canvas, const Weather &weather)
 const struct
 {
     int top, pitch, tagWidth;
-} USE = {ROW.top + 5 * ROW.pitch + 4, 20, 42};
+} USE = {ROW.top + 5 * ROW.pitch + 6, 22, 42};
 
 void drawRunwayUse(Canvas &canvas, const RunwayUse &runways)
 {

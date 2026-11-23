@@ -95,6 +95,8 @@ bun run extract KMSP ~/Documents/SimToolkitPro/navdata.s3db
 
 - Solid black runways are in use, outlined ones are idle, red ones with crosses are closed.
 - Green arrows show landing direction, blue arrows departure direction.
-- The compass arrow points the way the wind is blowing.
+- The runways sit inside a compass rose, north up. The orange arrow on its rim
+  marks where the wind comes from and points the way it blows, so it lines up
+  with the runways in use. Calm and variable winds are written in the corner instead.
 
 Fonts are [Spleen](https://github.com/fcambus/spleen) (BSD 2-Clause).
