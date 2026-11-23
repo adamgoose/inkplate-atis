@@ -1,0 +1,90 @@
+{
+  "ident": "KMSP",
+  "name": "MINNEAPOLIS-ST PAUL INTL/WOLD-",
+  "latitude": 44.88197222,
+  "longitude": -93.22177778,
+  "elevationFt": 842,
+  "airac": "2611",
+  "runways": [
+    {
+      "ident": "RW04",
+      "latitude": 44.87527222,
+      "longitude": -93.23409167,
+      "trueBearing": 44.905,
+      "magneticBearing": 44.9,
+      "lengthFt": 11006,
+      "widthFt": 150,
+      "displacedThresholdFt": 1550
+    },
+    {
+      "ident": "RW12L",
+      "latitude": 44.89295278,
+      "longitude": -93.22099167,
+      "trueBearing": 121.421,
+      "magneticBearing": 121.3,
+      "lengthFt": 8200,
+      "widthFt": 150,
+      "displacedThresholdFt": 0
+    },
+    {
+      "ident": "RW12R",
+      "latitude": 44.88778889,
+      "longitude": -93.23413056,
+      "trueBearing": 121.42,
+      "magneticBearing": 121.3,
+      "lengthFt": 10000,
+      "widthFt": 200,
+      "displacedThresholdFt": 0
+    },
+    {
+      "ident": "RW17",
+      "latitude": 44.88775278,
+      "longitude": -93.24225278,
+      "trueBearing": 169.561,
+      "magneticBearing": 169.5,
+      "lengthFt": 8000,
+      "widthFt": 150,
+      "displacedThresholdFt": 0
+    },
+    {
+      "ident": "RW22",
+      "latitude": 44.89166944,
+      "longitude": -93.21101944,
+      "trueBearing": 224.921,
+      "magneticBearing": 225,
+      "lengthFt": 11006,
+      "widthFt": 150,
+      "displacedThresholdFt": 1000
+    },
+    {
+      "ident": "RW30L",
+      "latitude": 44.87352222,
+      "longitude": -93.20118611,
+      "trueBearing": 301.443,
+      "magneticBearing": 301.3,
+      "lengthFt": 10000,
+      "widthFt": 200,
+      "displacedThresholdFt": 0
+    },
+    {
+      "ident": "RW30R",
+      "latitude": 44.88153889,
+      "longitude": -93.19463056,
+      "trueBearing": 301.44,
+      "magneticBearing": 301.3,
+      "lengthFt": 8200,
+      "widthFt": 150,
+      "displacedThresholdFt": 200
+    },
+    {
+      "ident": "RW35",
+      "latitude": 44.86617778,
+      "longitude": -93.23664444,
+      "trueBearing": 349.565,
+      "magneticBearing": 349.5,
+      "lengthFt": 8000,
+      "widthFt": 150,
+      "displacedThresholdFt": 0
+    }
+  ]
+}
