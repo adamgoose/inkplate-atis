@@ -1,0 +1,3 @@
+# Arduino cores, libraries and build output installed by `make setup`.
+.arduino
+.direnv

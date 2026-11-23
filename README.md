@@ -22,13 +22,28 @@ only refreshed when the broadcast changed.
 
 ## Firmware
 
-1. Copy `firmware/inkplate_atis/config.example.h` to `config.h` and set the
-   WiFi credentials.
-2. In the Arduino IDE, add the Inkplate board package
+Copy `firmware/inkplate_atis/config.example.h` to `config.h` and set the WiFi
+credentials. Then, with Nix, the dev shell provides the whole toolchain:
+
+```bash
+nix develop
+make setup    # once: installs the Inkplate board package and library into .arduino/
+make flash    # compile and upload; PORT=/dev/cu.usbserial-XXXX to pick a port
+make monitor  # serial log
+```
+
+`make test` and `make preview` run the simulator described below.
+
+Without Nix:
+
+1. In the Arduino IDE, add the Inkplate board package
    (`https://github.com/SolderedElectronics/Dasduino-Board-Definitions-for-Arduino-IDE/raw/master/package_Dasduino_Boards_index.json`),
    install the **InkplateLibrary** library, and select **Soldered Inkplate 6COLOR**.
-3. Open `firmware/inkplate_atis/inkplate_atis.ino` and upload. If the upload
+2. Open `firmware/inkplate_atis/inkplate_atis.ino` and upload. If the upload
    stops with "chip stopped responding", set Tools → Upload Speed to 115200.
+
+On Apple Silicon without Rosetta the board package's bundled `esptool` cannot
+run; `make setup` replaces it with the dev shell's native one.
 
 Or with arduino-cli:
 
