@@ -4,81 +4,77 @@ Shows the current D-ATIS, weather and runway configuration for an airport
 (KMSP by default) on a Soldered Inkplate 6COLOR.
 
 ```
-atis.info ──► server (Bun + Effect) ──► /frame.bin ──► Inkplate firmware
-                 ▲
-     data/KMSP.json (runways from AIRAC navdata)
+atis.info ──► Inkplate firmware ──► e-paper panel
+                    ▲
+   runway data and fonts baked in at build time
 ```
 
-The server does the work: it fetches the ATIS, works out which runways are
-landing, departing and closed, draws the 600×448 frame in the panel's seven
-inks and serves it as raw pixels. The firmware wakes, downloads the frame,
-refreshes the panel only if it changed, and goes back to deep sleep.
+The board is standalone. It wakes, fetches the ATIS from atis.info over HTTPS,
+works out which runways are landing, departing and closed, draws the 600×448
+screen in the panel's seven inks, and goes back to deep sleep. The panel is
+only refreshed when the broadcast changed.
 
-## Server
-
-```bash
-cd server
-bun install
-bun run start
-```
-
-Open `http://localhost:8080/` for a live preview of what the panel will show.
-
-| Route         | Purpose                                                        |
-| ------------- | -------------------------------------------------------------- |
-| `/frame.bin`  | Frame for the firmware: 134,400 bytes, 4 bits per pixel. Honours `If-None-Match`. |
-| `/frame.png`  | The same frame as a PNG.                                       |
-| `/state.json` | Parsed ATIS and runway data.                                   |
-
-Environment variables:
-
-| Variable          | Default                 | Meaning                                   |
-| ----------------- | ----------------------- | ----------------------------------------- |
-| `PORT`            | `8080`                  | Listen port.                              |
-| `ICAO`            | `KMSP`                  | Airport. Needs a matching `data/{ICAO}.json`. |
-| `REFRESH_SECONDS` | `300`                   | How long the firmware sleeps between checks. |
-| `ATIS_CACHE`      | `60 seconds`            | How long an atis.info response is reused. |
-| `ATIS_API`        | `https://atis.info/api` | Upstream base URL.                        |
-
-### Runway data
-
-`data/KMSP.json` was extracted from AIRAC 2611. After a new cycle, or for
-another airport:
-
-```bash
-bun run extract KMSP ~/Documents/SimToolkitPro/navdata.s3db
-```
-
-### Tests
-
-```bash
-bun test
-```
+| Folder      | What it is                                                             |
+| ----------- | ---------------------------------------------------------------------- |
+| `firmware/` | The Arduino sketch. Parsing and drawing live in `inkplate_atis/src/`.  |
+| `sim/`      | Builds that same `src/` on your computer for tests and PNG previews.   |
+| `tools/`    | Bun scripts that generate the runway and font tables in `src/`.        |
 
 ## Firmware
 
 1. Copy `firmware/inkplate_atis/config.example.h` to `config.h` and set the
-   WiFi credentials and the server's LAN address.
+   WiFi credentials.
 2. In the Arduino IDE, add the Inkplate board package
    (`https://github.com/SolderedElectronics/Dasduino-Board-Definitions-for-Arduino-IDE/raw/master/package_Dasduino_Boards_index.json`),
    install the **InkplateLibrary** library, and select **Soldered Inkplate 6COLOR**.
-3. Open `firmware/inkplate_atis/inkplate_atis.ino` and upload.
+3. Open `firmware/inkplate_atis/inkplate_atis.ino` and upload. If the upload
+   stops with "chip stopped responding", set Tools → Upload Speed to 115200.
 
 Or with arduino-cli:
 
 ```bash
-arduino-cli compile --fqbn Inkplate_Boards:esp32:Inkplate6COLOR firmware/inkplate_atis
-arduino-cli upload  --fqbn Inkplate_Boards:esp32:Inkplate6COLOR -p /dev/cu.usbserial-XXXX firmware/inkplate_atis
+arduino-cli compile --fqbn Inkplate_Boards:esp32:Inkplate6COLOR:UploadSpeed=115200 firmware/inkplate_atis
+arduino-cli upload  --fqbn Inkplate_Boards:esp32:Inkplate6COLOR:UploadSpeed=115200 -p /dev/cu.usbserial-XXXX firmware/inkplate_atis
 ```
 
 Behaviour:
 
-- Sleeps for the interval the server advertises, then checks again. An
-  unchanged frame costs a few seconds of WiFi and no panel refresh.
+- Sleeps for `REFRESH_SECONDS` (5 minutes), then checks again. An unchanged
+  broadcast costs a few seconds of WiFi and no panel refresh.
 - The wake button forces an immediate full redraw.
-- If the server or WiFi is unreachable it keeps the last frame, retries every
-  minute, and shows a notice after three failures in a row.
-- Reports battery voltage to the server, which adds a LOW BATT flag below 3.5 V.
+- If WiFi or atis.info is unreachable it keeps the last broadcast on screen,
+  retries every minute, and shows the reason after three failures in a row.
+- Shows a LOW BATT flag below 3.5 V.
+- By default the TLS connection is encrypted but atis.info's certificate is not
+  verified. Set `ATIS_ROOT_CA` in `config.h` to pin a root certificate.
+
+## Preview and tests
+
+`sim/` compiles the firmware's parser and renderer with your computer's C++
+compiler, so the output is exactly what the board draws.
+
+```bash
+cd sim
+make test                                # parser tests
+make preview                             # live ATIS -> ../preview.png
+make preview ATIS=samples/south-flow.json
+```
+
+`ATIS` is any saved `https://atis.info/api/{ICAO}` response.
+
+## Runway data and fonts
+
+The runway layout in `firmware/inkplate_atis/src/airport_data.cpp` was
+extracted from AIRAC 2611. After a new cycle, or for another airport,
+regenerate it and reflash:
+
+```bash
+cd tools
+bun install
+bun run extract KMSP ~/Documents/SimToolkitPro/navdata.s3db
+```
+
+`bun run fonts` regenerates `fonts.cpp` from the BDF files in `tools/fonts/`.
 
 ## Reading the display
 

@@ -1,12 +1,10 @@
 {
-  "name": "inkplate-atis-server",
+  "name": "inkplate-atis-tools",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun --watch src/main.ts",
-    "start": "bun src/main.ts",
     "extract": "bun src/extract.ts",
-    "test": "bun test",
+    "fonts": "bun src/fonts.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

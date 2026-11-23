@@ -1,9 +1,10 @@
 /*
  * ATIS display for the Soldered Inkplate 6COLOR.
  *
- * The board wakes, asks the server for the current frame, redraws only when the
- * frame changed (a 7-colour refresh takes ~15 s and flashes), then deep-sleeps.
- * All layout and ATIS parsing live in the server; this sketch only moves pixels.
+ * The board wakes, fetches the D-ATIS for the built-in airport from atis.info,
+ * redraws only when the broadcast changed (a 7-colour refresh takes ~15 s and
+ * flashes), then deep-sleeps. Parsing and layout live in src/, which also
+ * builds on a computer for tests and previews (see sim/).
  *
  * Board: "Soldered Inkplate 6COLOR" from the Inkplate board package.
  * Library: InkplateLibrary.
@@ -15,29 +16,45 @@
 #include <HTTPClient.h>
 #include <Inkplate.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 
 #include "config.h"
+#include "src/render.h"
 
-static const int FRAME_WIDTH = 600;
-static const int FRAME_HEIGHT = 448;
-static const int FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT / 2; // 4 bits per pixel
-static const int ROW_BYTES = FRAME_WIDTH / 2;
+#ifndef ATIS_API
+#define ATIS_API "https://atis.info/api/"
+#endif
+#ifndef REFRESH_SECONDS
+#define REFRESH_SECONDS 300
+#endif
+#ifndef RETRY_SECONDS
+#define RETRY_SECONDS 60
+#endif
+
 static const uint32_t WIFI_TIMEOUT_MS = 20000;
-static const uint32_t STREAM_TIMEOUT_MS = 10000;
+static const uint32_t HTTP_TIMEOUT_MS = 15000;
 static const uint8_t FAILURES_BEFORE_NOTICE = 3;
+// The LOW BATT flag turns on below the first voltage and off above the second,
+// so a battery hovering at the threshold does not redraw the panel every wake.
+static const float LOW_BATTERY_VOLTS = 3.5f;
+static const float BATTERY_OK_VOLTS = 3.6f;
 
-// Wire value (one nibble) to panel colour. See Ink in server/src/Canvas.ts.
-static const uint8_t PALETTE[] = {INKPLATE_BLACK, INKPLATE_WHITE,  INKPLATE_GREEN, INKPLATE_BLUE,
-                                  INKPLATE_RED,   INKPLATE_YELLOW, INKPLATE_ORANGE};
+enum Shown : uint8_t { SHOWN_NOTHING, SHOWN_ATIS, SHOWN_PROBLEM };
 
 // Survive deep sleep.
-RTC_DATA_ATTR char lastEtag[48] = "";
+RTC_DATA_ATTR uint8_t shown = SHOWN_NOTHING;
+RTC_DATA_ATTR uint32_t shownHash = 0;
 RTC_DATA_ATTR uint8_t consecutiveFailures = 0;
-RTC_DATA_ATTR uint32_t refreshSeconds = DEFAULT_REFRESH_SECONDS;
+RTC_DATA_ATTR bool lowBattery = false;
 
 Inkplate display;
 
-enum class FetchResult { Unchanged, Drawn, Failed };
+// Ink values match the library's INKPLATE_* colours, so pixels pass straight through.
+class Panel : public Surface
+{
+  public:
+    void set(int x, int y, Ink ink) override { display.drawPixel(x, y, ink); }
+};
 
 static bool connectWiFi()
 {
@@ -53,97 +70,56 @@ static bool connectWiFi()
     return true;
 }
 
-static bool readExactly(WiFiClient &stream, uint8_t *buffer, size_t length)
+// Returns the HTTP status, or a negative HTTPClient error.
+static int fetchAtis(std::string &body)
 {
-    size_t received = 0;
-    uint32_t lastProgress = millis();
-    while (received < length)
-    {
-        const int n = stream.read(buffer + received, length - received);
-        if (n > 0)
-        {
-            received += n;
-            lastProgress = millis();
-        }
-        else if (!stream.connected() && !stream.available())
-            return false;
-        else if (millis() - lastProgress > STREAM_TIMEOUT_MS)
-            return false;
-        else
-            delay(1);
-    }
-    return true;
-}
-
-// Fills the Inkplate frame buffer from the response body. The panel is only
-// refreshed if the whole frame arrived, so a dropped connection leaves the
-// previous image on the glass.
-static bool readFrame(WiFiClient &stream)
-{
-    static uint8_t row[ROW_BYTES];
-    for (int y = 0; y < FRAME_HEIGHT; y++)
-    {
-        if (!readExactly(stream, row, ROW_BYTES))
-            return false;
-        for (int i = 0; i < ROW_BYTES; i++)
-        {
-            const uint8_t left = row[i] >> 4;
-            const uint8_t right = row[i] & 0x0F;
-            display.drawPixel(2 * i, y, PALETTE[left < 7 ? left : 1]);
-            display.drawPixel(2 * i + 1, y, PALETTE[right < 7 ? right : 1]);
-        }
-    }
-    return true;
-}
-
-static FetchResult fetchFrame(bool force)
-{
+    WiFiClientSecure client;
+#ifdef ATIS_ROOT_CA
+    client.setCACert(ATIS_ROOT_CA);
+#else
+    client.setInsecure();
+#endif
     HTTPClient http;
-    const String url = String(SERVER_URL) + "/frame.bin?battery=" + String(display.readBattery(), 2);
-    if (!http.begin(url))
-        return FetchResult::Failed;
-
-    const char *wanted[] = {"ETag", "X-Refresh-Seconds"};
-    http.collectHeaders(wanted, 2);
-    http.setTimeout(STREAM_TIMEOUT_MS);
-    if (!force && lastEtag[0] != '\0')
-        http.addHeader("If-None-Match", lastEtag);
-
+    const String url = String(ATIS_API) + AIRPORT.ident;
+    if (!http.begin(client, url))
+        return -1;
+    http.setTimeout(HTTP_TIMEOUT_MS);
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    http.setUserAgent("inkplate-atis");
     const int status = http.GET();
-    Serial.printf("GET %s -> %d\n", url.c_str(), status);
-
-    const long advised = http.header("X-Refresh-Seconds").toInt();
-    if (advised > 0)
-        refreshSeconds = constrain(advised, 30, 6 * 3600);
-
-    FetchResult result = FetchResult::Failed;
-    if (status == HTTP_CODE_NOT_MODIFIED)
-    {
-        result = FetchResult::Unchanged;
-    }
-    else if (status == HTTP_CODE_OK && http.getSize() == FRAME_BYTES && readFrame(*http.getStreamPtr()))
-    {
-        display.display();
-        strlcpy(lastEtag, http.header("ETag").c_str(), sizeof(lastEtag));
-        result = FetchResult::Drawn;
-    }
+    if (status == HTTP_CODE_OK)
+        body = http.getString().c_str();
     http.end();
-    return result;
+    Serial.printf("GET %s -> %d (%u bytes)\n", url.c_str(), status, (unsigned)body.size());
+    return status;
 }
 
-static void showNotice(const char *line1, const char *line2)
+// FNV-1a over everything the screen is drawn from.
+static uint32_t contentHash(const std::vector<AtisEntry> &entries)
 {
-    display.clearDisplay();
-    display.setTextColor(INKPLATE_BLACK);
-    display.setTextSize(3);
-    display.setCursor(20, 180);
-    display.print(line1);
-    display.setTextSize(2);
-    display.setCursor(20, 230);
-    display.print(line2);
+    uint32_t hash = 2166136261u;
+    const auto mix = [&hash](const std::string &text) {
+        for (const char c : text)
+            hash = (hash ^ (uint8_t)c) * 16777619u;
+        hash = (hash ^ 0xffu) * 16777619u;
+    };
+    for (const AtisEntry &entry : entries)
+    {
+        mix(entry.type);
+        mix(entry.code);
+        mix(entry.datis);
+        mix(entry.time);
+    }
+    mix(lowBattery ? "low" : "ok");
+    return hash;
+}
+
+static void draw(const AtisState *atis, const char *problem)
+{
+    Panel panel;
+    Canvas canvas(panel, SCREEN_WIDTH, SCREEN_HEIGHT);
+    render(canvas, AIRPORT, atis, lowBattery, problem);
     display.display();
-    // Whatever was on screen is gone, so the next good frame must be drawn.
-    lastEtag[0] = '\0';
 }
 
 static void sleepFor(uint32_t seconds)
@@ -165,23 +141,58 @@ void setup()
 
     const bool buttonWake = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0;
 
-    FetchResult result = FetchResult::Failed;
-    const bool online = connectWiFi();
-    if (online)
-        result = fetchFrame(buttonWake);
+    const float volts = display.readBattery();
+    if (volts > 0 && volts < LOW_BATTERY_VOLTS)
+        lowBattery = true;
+    else if (volts > BATTERY_OK_VOLTS)
+        lowBattery = false;
 
-    if (result == FetchResult::Failed)
+    char problem[80] = "";
+    std::vector<AtisEntry> entries;
+    if (!connectWiFi())
     {
+        snprintf(problem, sizeof(problem), "No WiFi: %s", WIFI_SSID);
+    }
+    else
+    {
+        std::string body;
+        const int status = fetchAtis(body);
+        if (status != HTTP_CODE_OK)
+            snprintf(problem, sizeof(problem), "atis.info did not answer (%d)", status);
+        else if (!parseAtisJson(body, entries))
+            snprintf(problem, sizeof(problem), "No D-ATIS for %s on atis.info", AIRPORT.ident);
+    }
+
+    if (problem[0] != '\0')
+    {
+        Serial.println(problem);
         if (consecutiveFailures < 255)
             consecutiveFailures++;
-        // Leave the last good frame up through brief outages; say so once it is stale.
-        if (consecutiveFailures == FAILURES_BEFORE_NOTICE || (buttonWake && lastEtag[0] == '\0'))
-            showNotice(online ? "ATIS server unreachable" : "No WiFi", online ? SERVER_URL : WIFI_SSID);
+        // Leave the last broadcast up through brief outages; say so once it is stale.
+        const bool stale = consecutiveFailures >= FAILURES_BEFORE_NOTICE || buttonWake;
+        if (shown == SHOWN_NOTHING || (shown == SHOWN_ATIS && stale))
+        {
+            draw(nullptr, problem);
+            shown = SHOWN_PROBLEM;
+        }
         sleepFor(RETRY_SECONDS);
     }
 
     consecutiveFailures = 0;
-    sleepFor(refreshSeconds);
+    const uint32_t hash = contentHash(entries);
+    if (buttonWake || shown != SHOWN_ATIS || hash != shownHash)
+    {
+        const AtisState state = parseAtis(entries);
+        draw(&state, "");
+        shown = SHOWN_ATIS;
+        shownHash = hash;
+        Serial.println("Redrawn");
+    }
+    else
+    {
+        Serial.println("Unchanged");
+    }
+    sleepFor(REFRESH_SECONDS);
 }
 
 void loop()
