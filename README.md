@@ -3,6 +3,12 @@
 Shows the current D-ATIS, weather and runway configuration for an airport
 (KMSP by default) on a Soldered Inkplate 6COLOR.
 
+| Live ATIS                     | South flow sample                                    |
+| ----------------------------- | ---------------------------------------------------- |
+| ![Live ATIS](preview.png)     | ![South flow sample](preview-south-flow.png)         |
+
+Both images come from the simulator (`make preview`), which draws exactly what the board does.
+
 ```
 atis.info ──► Inkplate firmware ──► e-paper panel
                     ▲
